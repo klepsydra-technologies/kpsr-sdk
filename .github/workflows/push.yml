@@ -1,0 +1,112 @@
+# Copyright 2023 Klepsydra Technologies AG
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Check build
+
+on:
+  push:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  builddebug:
+    name: Vanilla Debug
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/klepsydra-technologies/kpsrbase:1.0.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+          mkdir build && cd build
+          cmake -DKPSR_WITH_DOXYGEN=true -DKPSR_WITH_CODE_METRICS=true -DCMAKE_BUILD_TYPE=Debug ../
+          make -j$(nproc)
+
+      - name: Unit tests
+        timeout-minutes: 10
+        run: cd build && make test ARGS="--gtest_shuffle"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: builddebug-logs
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+            build/Testing/Temporary
+
+  buildrelease:
+    needs: builddebug
+    strategy:
+      matrix:
+        include:
+          - name: Vanilla
+    name: ${{ matrix.name }} Release
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/klepsydra-technologies/kpsrbase:1.0.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        run: >
+          git config --global --add safe.directory ${GITHUB_WORKSPACE} &&
+          mkdir build && cd build &&
+          cmake -DKPSR_WITH_DOXYGEN=false -DKPSR_WITH_CODE_METRICS=true -DCMAKE_BUILD_TYPE=Release ../ &&
+          make -j$(nproc)
+
+      - name: Create deb packages
+        run: |
+          cpack -G DEB
+          ls -la | grep deb
+        working-directory: build
+
+      - name: Store deb packages
+        uses: actions/upload-artifact@v3
+        with:
+          name: deb-packages-${{ matrix.name }}
+          path: build/*.deb
+
+      - name: Create tarballs
+        run: |
+          sudo cpack -G TGZ
+        working-directory: build
+
+      - name: Store tarballs
+        uses: actions/upload-artifact@v3
+        with:
+          name: tgz-packages-${{ matrix.name }}
+          path: build/*.tar.gz
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: builddebug-logs
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+            build/Testing/Temporary
